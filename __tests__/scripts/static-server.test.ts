@@ -640,6 +640,136 @@ describe("static-server.mjs", () => {
     });
   });
 
+  describe("--max-attachment-size-mb", () => {
+    it("defaults to null so the frontend keeps its own default", () => {
+      const config = parseArgs([]);
+      expect(config.maxAttachmentFileMb).toBeNull();
+      expect(config.maxAttachmentTotalMb).toBeNull();
+    });
+
+    it("parses the flag into both limits", () => {
+      const config = parseArgs(["--max-attachment-size-mb", "512"]);
+      expect(config.maxAttachmentFileMb).toBe(512);
+      expect(config.maxAttachmentTotalMb).toBe(512);
+    });
+
+    it("parses the per-limit flags independently", () => {
+      const config = parseArgs([
+        "--max-attachment-file-mb",
+        "64",
+        "--max-attachment-total-mb",
+        "512",
+      ]);
+      expect(config.maxAttachmentFileMb).toBe(64);
+      expect(config.maxAttachmentTotalMb).toBe(512);
+    });
+
+    it("lets a per-limit flag override the shared one regardless of order", () => {
+      const config = parseArgs([
+        "--max-attachment-file-mb",
+        "64",
+        "--max-attachment-size-mb",
+        "512",
+      ]);
+      expect(config.maxAttachmentFileMb).toBe(64);
+      expect(config.maxAttachmentTotalMb).toBe(512);
+    });
+
+    it("falls back to AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB when the flag is absent", () => {
+      const config = parseArgs([], {
+        AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB: "256",
+      } as NodeJS.ProcessEnv);
+      expect(config.maxAttachmentFileMb).toBe(256);
+      expect(config.maxAttachmentTotalMb).toBe(256);
+    });
+
+    it("falls back to the per-limit environment variables", () => {
+      const config = parseArgs([], {
+        AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB: "64",
+        AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB: "512",
+      } as NodeJS.ProcessEnv);
+      expect(config.maxAttachmentFileMb).toBe(64);
+      expect(config.maxAttachmentTotalMb).toBe(512);
+    });
+
+    it("lets the per-limit environment variables override the shared one", () => {
+      const config = parseArgs([], {
+        AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB: "256",
+        AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB: "64",
+      } as NodeJS.ProcessEnv);
+      expect(config.maxAttachmentFileMb).toBe(64);
+      expect(config.maxAttachmentTotalMb).toBe(256);
+    });
+
+    it("prefers the flag over the environment variable", () => {
+      const config = parseArgs(["--max-attachment-size-mb", "512"], {
+        AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB: "256",
+      } as NodeJS.ProcessEnv);
+      expect(config.maxAttachmentFileMb).toBe(512);
+      expect(config.maxAttachmentTotalMb).toBe(512);
+    });
+
+    it("ignores an invalid environment variable instead of failing to start", () => {
+      const config = parseArgs([], {
+        AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB: "not-a-number",
+      } as NodeJS.ProcessEnv);
+      expect(config.maxAttachmentFileMb).toBeNull();
+      expect(config.maxAttachmentTotalMb).toBeNull();
+    });
+
+    it("rejects a non-positive flag value", () => {
+      expect(() => parseArgs(["--max-attachment-size-mb", "0"])).toThrow(
+        /--max-attachment-size-mb must be a positive number/,
+      );
+      expect(() => parseArgs(["--max-attachment-size-mb", "abc"])).toThrow(
+        /--max-attachment-size-mb must be a positive number/,
+      );
+      expect(() => parseArgs(["--max-attachment-file-mb", "0"])).toThrow(
+        /--max-attachment-file-mb must be a positive number/,
+      );
+      expect(() => parseArgs(["--max-attachment-total-mb", "0"])).toThrow(
+        /--max-attachment-total-mb must be a positive number/,
+      );
+    });
+
+    it("exposes the limits on the window globals", async () => {
+      const buildDir = mkdtempSync(path.join(tmpdir(), "agent-canvas-build-"));
+      tempDirs.push(buildDir);
+      writeFileSync(
+        path.join(buildDir, "index.html"),
+        "<html><head></head><body>app</body></html>",
+      );
+
+      const origin = await startServer(buildDir, {
+        maxAttachmentFileMb: 64,
+        maxAttachmentTotalMb: 512,
+      });
+      const body = await (await fetch(`${origin}/`)).text();
+
+      expect(body).toContain(
+        "window.__AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB__=64",
+      );
+      expect(body).toContain(
+        "window.__AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB__=512",
+      );
+    });
+
+    it("does not inject the limits when they are not configured", async () => {
+      const buildDir = mkdtempSync(path.join(tmpdir(), "agent-canvas-build-"));
+      tempDirs.push(buildDir);
+      writeFileSync(
+        path.join(buildDir, "index.html"),
+        "<html><head></head><body>app</body></html>",
+      );
+
+      const origin = await startServer(buildDir);
+      const body = await (await fetch(`${origin}/`)).text();
+
+      expect(body).not.toContain("__AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB__");
+      expect(body).not.toContain("__AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB__");
+    });
+  });
+
   describe("session key injection", () => {
     async function startServerWithKey(dir: string, sessionApiKey: string) {
       const server = await startStaticServer({
@@ -792,7 +922,9 @@ describe("static-server.mjs", () => {
 
       try {
         const server = await startStaticServer({
-          ...parseArgs(["--host", "0.0.0.0"], { SESSION_API_KEY: "lan-secret" }),
+          ...parseArgs(["--host", "0.0.0.0"], {
+            SESSION_API_KEY: "lan-secret",
+          }),
           port: 0,
           dir: buildDir,
         });

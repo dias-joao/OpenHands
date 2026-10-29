@@ -4,6 +4,7 @@ import { sendMessageWithAttachments } from "#/utils/send-message-with-attachment
 const mocks = vi.hoisted(() => ({
   partition: vi.fn(),
   validate: vi.fn(),
+  validateEmbeddedImages: vi.fn(),
   convert: vi.fn(),
   resolveRuntime: vi.fn(),
   upload: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock("#/components/features/chat/utils/chat-input.utils", () => ({
 
 vi.mock("#/utils/file-validation", () => ({
   validateFiles: mocks.validate,
+  validateEmbeddedImageSizes: mocks.validateEmbeddedImages,
 }));
 
 vi.mock("#/utils/convert-image-to-base-64", () => ({
@@ -67,14 +69,12 @@ describe("sendMessageWithAttachments", () => {
       imagesAsFiles: [imageFile],
     });
     mocks.validate.mockReturnValue({ isValid: true });
+    mocks.validateEmbeddedImages.mockReturnValue({ isValid: true });
     mocks.convert.mockResolvedValue("data:image/png;base64,aW1hZ2U=");
     mocks.resolveRuntime.mockResolvedValue({ kind: "remote" });
     mocks.upload.mockResolvedValue({
       skipped_files: [{ reason: "large.png was skipped" }],
-      uploaded_files: [
-        "/workspace/notes.txt",
-        "/workspace/large.png",
-      ],
+      uploaded_files: ["/workspace/notes.txt", "/workspace/large.png"],
     });
     mocks.sendMessage.mockResolvedValue(undefined);
   });
@@ -158,5 +158,24 @@ describe("sendMessageWithAttachments", () => {
     await expect(sendMessageWithAttachments(options())).rejects.toThrow(
       "Invalid attachments",
     );
+  });
+
+  it("throws the embedded-image error before converting any image", async () => {
+    mocks.validateEmbeddedImages.mockReturnValue({
+      isValid: false,
+      errorMessage: "Images exceeding 3MB are not allowed: image.png",
+    });
+
+    await expect(sendMessageWithAttachments(options())).rejects.toThrow(
+      "Images exceeding 3MB are not allowed: image.png",
+    );
+    expect(mocks.convert).not.toHaveBeenCalled();
+    expect(mocks.upload).not.toHaveBeenCalled();
+  });
+
+  it("checks only the images that are embedded, not the ones uploaded as files", async () => {
+    await sendMessageWithAttachments(options());
+
+    expect(mocks.validateEmbeddedImages).toHaveBeenCalledWith([image]);
   });
 });

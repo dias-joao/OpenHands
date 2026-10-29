@@ -85,6 +85,41 @@ function isEnvFlagEnabled(value) {
   return normalized === "1" || normalized === "true";
 }
 
+/**
+ * Parse a MiB value that must be a positive number.
+ *
+ * Throws with the offending flag name so a bad command line fails loudly at
+ * startup instead of silently leaving the default in place.
+ */
+function parsePositiveMb(value, flagName) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(
+      `${flagName} must be a positive number: ${value ?? "(empty)"}`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Read a MiB value from the environment.
+ *
+ * Returns `null` when the variable is unset or invalid. An invalid value is
+ * reported and then ignored, so a typo in a deployment's environment cannot
+ * take the server down at startup.
+ */
+function readPositiveMbEnv(value, name) {
+  if (!value) return null;
+
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+
+  console.error(
+    `ERROR: ignoring ${name}=${value} (expected a positive number).`,
+  );
+  return null;
+}
+
 export function parseArgs(argv = process.argv.slice(2), env = process.env) {
   const config = {
     port: 3001,
@@ -100,6 +135,9 @@ export function parseArgs(argv = process.argv.slice(2), env = process.env) {
     lockToCloud: null,
     basePath: "/",
     vscodeBasePath: null,
+    maxAttachmentSizeMb: null,
+    maxAttachmentFileMb: null,
+    maxAttachmentTotalMb: null,
     // Also settable via the --disable-telemetry flag below.
     disableTelemetry: isEnvFlagEnabled(env.AGENT_CANVAS_DISABLE_TELEMETRY),
   };
@@ -156,6 +194,27 @@ export function parseArgs(argv = process.argv.slice(2), env = process.env) {
         config.vscodeBasePath = prefix.replace(/\/+$/, "") || "/";
         break;
       }
+      case "--max-attachment-size-mb": {
+        config.maxAttachmentSizeMb = parsePositiveMb(
+          argv[++i],
+          "--max-attachment-size-mb",
+        );
+        break;
+      }
+      case "--max-attachment-file-mb": {
+        config.maxAttachmentFileMb = parsePositiveMb(
+          argv[++i],
+          "--max-attachment-file-mb",
+        );
+        break;
+      }
+      case "--max-attachment-total-mb": {
+        config.maxAttachmentTotalMb = parsePositiveMb(
+          argv[++i],
+          "--max-attachment-total-mb",
+        );
+        break;
+      }
 
       case "--auth-required":
         config.authRequired = true;
@@ -202,6 +261,38 @@ export function parseArgs(argv = process.argv.slice(2), env = process.env) {
   if (!config.sessionApiKey && !config.authRequired && env.SESSION_API_KEY) {
     config.sessionApiKey = env.SESSION_API_KEY;
   }
+
+  // Fallback: the attachment size ceilings may also come from the
+  // environment, so a container can be retuned without changing its
+  // command line. The explicit flags win over the env vars.
+  //
+  // AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB sets both limits at once;
+  // AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB and
+  // AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB override them individually.
+  const sharedAttachmentMb =
+    config.maxAttachmentSizeMb ??
+    readPositiveMbEnv(
+      env.AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB,
+      "AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB",
+    );
+  const attachmentFileMb =
+    config.maxAttachmentFileMb ??
+    readPositiveMbEnv(
+      env.AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB,
+      "AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB",
+    );
+  const attachmentTotalMb =
+    config.maxAttachmentTotalMb ??
+    readPositiveMbEnv(
+      env.AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB,
+      "AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB",
+    );
+
+  // The shared setting fills both ceilings; a per-limit one overrides just
+  // its own. Resolved after parsing so the order of the flags does not
+  // matter.
+  config.maxAttachmentFileMb = attachmentFileMb ?? sharedAttachmentMb;
+  config.maxAttachmentTotalMb = attachmentTotalMb ?? sharedAttachmentMb;
 
   // Guard: --session-api-key and --auth-required are semantically
   // mutually exclusive. The first auto-injects the key (local mode);
@@ -294,6 +385,20 @@ OPTIONS:
                                produces a control that opens the SPA. Omit on
                                any origin without the editor route.
   --reject-prefix <prefix>     Return 503 for requests matching <prefix>
+  --max-attachment-size-mb <mb>
+                               Set both chat-attachment ceilings, in MiB: one
+                               for a single attachment and one for a combined
+                               selection. Injects
+                               window.__AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB__
+                               and __AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB__.
+                               Equivalent to
+                               AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB.
+  --max-attachment-file-mb <mb>
+                               Set the ceiling for a single chat attachment.
+                               Overrides --max-attachment-size-mb.
+  --max-attachment-total-mb <mb>
+                               Set the ceiling for a combined selection of chat
+                               attachments. Overrides --max-attachment-size-mb.
   --no-referrer-prefix <p>     Send "Referrer-Policy: no-referrer" on proxied
                                responses under <p>. For upstreams whose URL
                                carries a credential in the query string.
@@ -383,6 +488,8 @@ function makeConfigInjectionScript(
   basePath,
   vscodeBasePath,
   disableTelemetry,
+  maxAttachmentFileMb,
+  maxAttachmentTotalMb,
 ) {
   const parts = [];
 
@@ -442,6 +549,24 @@ function makeConfigInjectionScript(
     parts.push(`window.__AGENT_CANVAS_DO_NOT_TRACK__=true;`);
   }
 
+  if (
+    typeof maxAttachmentFileMb === "number" &&
+    Number.isFinite(maxAttachmentFileMb)
+  ) {
+    parts.push(
+      `window.__AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB__=${serializeForInlineScript(maxAttachmentFileMb)};`,
+    );
+  }
+
+  if (
+    typeof maxAttachmentTotalMb === "number" &&
+    Number.isFinite(maxAttachmentTotalMb)
+  ) {
+    parts.push(
+      `window.__AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB__=${serializeForInlineScript(maxAttachmentTotalMb)};`,
+    );
+  }
+
   if (parts.length === 0) return "";
 
   return `<script>(function(){${parts.join("")}}());</script>`;
@@ -463,6 +588,8 @@ async function serveInjectedIndexHtml(
     basePath,
     vscodeBasePath,
     disableTelemetry,
+    maxAttachmentFileMb,
+    maxAttachmentTotalMb,
   } = {},
 ) {
   let content;
@@ -480,6 +607,8 @@ async function serveInjectedIndexHtml(
     basePath,
     vscodeBasePath,
     disableTelemetry,
+    maxAttachmentFileMb,
+    maxAttachmentTotalMb,
   );
   // Inject right before </head> so the key is available before any app code runs.
   // replace() targets the first (and only) </head> in well-formed HTML.
@@ -530,6 +659,8 @@ function needsRuntimeInjection(injectionOpts) {
     injectionOpts.lockToCloud ||
     injectionOpts.vscodeBasePath ||
     injectionOpts.disableTelemetry ||
+    typeof injectionOpts.maxAttachmentFileMb === "number" ||
+    typeof injectionOpts.maxAttachmentTotalMb === "number" ||
     (injectionOpts.basePath && injectionOpts.basePath !== "/"),
   );
 }
@@ -684,6 +815,14 @@ export function startStaticServer(config) {
     basePath: normalizeBasePath(config.basePath),
     vscodeBasePath: config.vscodeBasePath || null,
     disableTelemetry: config.disableTelemetry || false,
+    maxAttachmentFileMb:
+      typeof config.maxAttachmentFileMb === "number"
+        ? config.maxAttachmentFileMb
+        : null,
+    maxAttachmentTotalMb:
+      typeof config.maxAttachmentTotalMb === "number"
+        ? config.maxAttachmentTotalMb
+        : null,
   };
   const basePath = injectionOpts.basePath;
   const rejectPrefixes = config.rejectPrefixes ?? [];

@@ -17,6 +17,18 @@
 #   AGENT_SERVER_PORT    – Internal agent-server port (default: 18000)
 #   AUTOMATION_PORT      – Internal automation port (default: 18001)
 #   AGENT_CANVAS_BASE_PATH – Static frontend mount path (default: /canvas)
+#   AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB – Maximum size, in MiB, of a chat
+#                          attachment and of a combined selection (default: 200).
+#                          The agent-server imposes no size limit of its own,
+#                          so this frontend check is the only one.
+#   AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB – Maximum size, in MiB, of a single chat
+#                          attachment. Overrides AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB.
+#   AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB – Maximum combined size, in MiB, of a
+#                          selection of chat attachments. Overrides
+#                          AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB.
+#                          Images embedded in a message keep a fixed 3 MiB cap:
+#                          they travel as base64 in a WebSocket frame that the
+#                          SDK limits to 4 MiB.
 #   VSCODE_PORT          – Internal editor port (default: 8001). The image does
 #                          not EXPOSE it and the editor is reached through
 #                          VSCODE_BASE_PATH on $PORT, but openvscode-server

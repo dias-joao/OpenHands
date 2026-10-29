@@ -469,6 +469,35 @@ You can create a `.env` file in the project directory with these variables based
 | `VITE_FRONTEND_PORT`        | Port to run the frontend application                                                      | `3001`                 |
 | `VITE_INSECURE_SKIP_VERIFY` | Skip TLS certificate verification for proxied backend requests                            | `false`                |
 
+### Chat attachment size limits
+
+The agent-server imposes no size limit of its own on uploaded files, so the
+frontend check is the only one. Two ceilings apply to a chat attachment: one
+for a single file, one for a combined selection. Both default to 200 MiB.
+
+| Variable                                   | Description                                             | Default |
+| ------------------------------------------ | ------------------------------------------------------- | ------- |
+| `VITE_MAX_ATTACHMENT_SIZE_MB`              | Both ceilings at once (build time)                      | `200`   |
+| `VITE_MAX_ATTACHMENT_FILE_MB`              | Ceiling for a single attachment (build time)            | `200`   |
+| `VITE_MAX_ATTACHMENT_TOTAL_MB`             | Ceiling for a combined selection (build time)           | `200`   |
+| `AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB`      | Both ceilings at once (serve time)                      | `200`   |
+| `AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB`      | Ceiling for a single attachment (serve time)            | `200`   |
+| `AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB`     | Ceiling for a combined selection (serve time)           | `200`   |
+
+The serve-time variables are read by `scripts/static-server.mjs` and injected
+into the page as `window.__AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB__` and
+`window.__AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB__`, so a running Docker
+deployment can be retuned with an environment change and a restart — no image
+rebuild. The same values are available as the `--max-attachment-size-mb`,
+`--max-attachment-file-mb` and `--max-attachment-total-mb` flags. A build-time
+value wins over a serve-time one.
+
+Images that are **embedded** in a message rather than uploaded as files keep a
+fixed 3 MiB ceiling, independent of these settings. They are base64-encoded
+and sent as a WebSocket frame, which the SDK caps at 4 MiB; base64 inflates by
+~4/3, so a larger image would be dropped in flight. To attach a larger image,
+use the "upload as file" toggle on the attachment.
+
 ### Cloud organization recovery in embedded hosts
 
 `AgentServerUIProviders` leaves organization recovery off by default so the host's

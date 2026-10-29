@@ -8,7 +8,10 @@ import type { SendMessageRequest } from "#/api/conversation-service/agent-server
 import { convertImageToBase64 } from "#/utils/convert-image-to-base-64";
 import { displayErrorToast } from "#/utils/custom-toast-handlers";
 import { partitionImagesForUpload } from "#/components/features/chat/utils/chat-input.utils";
-import { validateFiles } from "#/utils/file-validation";
+import {
+  validateEmbeddedImageSizes,
+  validateFiles,
+} from "#/utils/file-validation";
 import { I18nKey } from "#/i18n/declaration";
 
 export interface SendMessageWithAttachmentsResult {
@@ -45,6 +48,16 @@ export async function sendMessageWithAttachments(options: {
   const validation = validateFiles([...imagesToEmbed, ...filesToUpload]);
   if (!validation.isValid) {
     throw new Error(validation.errorMessage ?? "Invalid attachments");
+  }
+
+  // Embedded images travel as base64 in a WebSocket frame, which the SDK caps
+  // at 4 MiB — a hard transport limit the configurable upload ceiling cannot
+  // lift.
+  const embeddedImageValidation = validateEmbeddedImageSizes(imagesToEmbed);
+  if (!embeddedImageValidation.isValid) {
+    throw new Error(
+      embeddedImageValidation.errorMessage ?? "Invalid embedded images",
+    );
   }
 
   const imageUrls = await Promise.all(

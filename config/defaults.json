@@ -43,6 +43,12 @@
     "apiBaseUrl": "https://api.digitalocean.com",
     "oauthClientId": ""
   },
+  "upload": {
+    "_comment": "Ceiling for chat attachments. maxFileMb bounds a single attachment and maxTotalMb bounds one selection combined; the agent-server imposes no size limit of its own, so these frontend checks are the only ones. maxEmbeddedImageMb is separate and fixed: embedded images are base64-encoded into a WebSocket frame that the SDK caps at 4 MiB, so they cannot follow the configurable upload limit. Operators override these at runtime with AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB, or per limit with AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB / AGENT_CANVAS_MAX_ATTACHMENT_TOTAL_MB.",
+    "maxFileMb": 200,
+    "maxTotalMb": 200,
+    "maxEmbeddedImageMb": 3
+  },
   "telemetry": {
     "posthogApiKey": "phc_kBtz5nKmxVRRQ7HtPwr2QX9eMC5j65zE86QKocVNwb4U",
     "posthogHost": "https://us.i.posthog.com"
