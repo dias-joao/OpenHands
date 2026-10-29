@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Configurable chat attachment size limits — design</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
+    --muted: #8b949e; --accent: #58a6ff; --good: #3fb950; --warn: #d29922; --bad: #f85149;
+    --code-bg: #0d1117;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem 4rem; background: var(--bg); color: var(--text);
+    font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 940px; margin: 0 auto; }
+  h1 { font-size: 1.85rem; margin: 0 0 .35rem; letter-spacing: -.02em; }
+  h2 { font-size: 1.25rem; margin: 2.75rem 0 .9rem; padding-bottom: .4rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.02rem; margin: 1.9rem 0 .6rem; color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 2rem; }
+  p { margin: .7rem 0; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+  code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: .1em .38em; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: .95rem 1.1rem; overflow-x: auto; margin: .8rem 0; }
+  pre code { background: none; border: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: .55rem .7rem; text-align: left; vertical-align: top; }
+  th { background: var(--panel); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.1rem 0; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.15rem; }
+  .card h4 { margin: 0 0 .5rem; font-size: .82rem; text-transform: uppercase; letter-spacing: .07em; }
+  .before h4 { color: var(--bad); } .after h4 { color: var(--good); }
+  .flow { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1.1rem 1.2rem; }
+  .step { display: flex; gap: .75rem; align-items: flex-start; margin: .55rem 0; font-size: 13.5px; }
+  .dot { flex: 0 0 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #07101c;
+         font-size: 12px; font-weight: 700; display: grid; place-items: center; margin-top: 1px; }
+  .cap { color: var(--muted); font-size: 13px; }
+  .ok { color: var(--good); } .no { color: var(--bad); } .wn { color: var(--warn); }
+  ul { padding-left: 1.2rem; } li { margin: .3rem 0; }
+  .note { border-left: 3px solid var(--warn); background: rgba(210,153,34,.07); padding: .8rem 1rem; border-radius: 0 8px 8px 0; margin: 1.2rem 0; }
+  .note strong { color: var(--warn); }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Configurable chat attachment size limits</h1>
+<p class="sub">
+  Agent Canvas &middot; frontend (this repository) &middot; supersedes the hard-coded 3&nbsp;MiB attachment cap
+</p>
+
+<h2>The problem</h2>
+
+<p>
+  <code>src/utils/file-validation.ts</code> hard-coded a <strong>3&nbsp;MiB</strong> ceiling on chat
+  attachments &mdash; both per file and for a whole selection &mdash; and built its error messages
+  from the literal <code>"3MB"</code>. There was no configuration channel at all: no env var, no flag,
+  no setting. The agent-server imposes <em>no</em> attachment-size cap of its own, so this frontend
+  check was the only thing standing between a user and a larger upload.
+</p>
+
+<pre><code>// before — src/utils/file-validation.ts
+const MAX_FILE_SIZE  = 3 * 1024 * 1024;   // per file
+const MAX_TOTAL_SIZE = 3 * 1024 * 1024;   // all files in one message</code></pre>
+
+<p>
+  A deployment that needed a 40&nbsp;MB PDF export or a log bundle had to patch the compiled bundle
+  at image build time and carry that fork.
+</p>
+
+<h2>The constraint that shapes the fix</h2>
+
+<div class="note">
+  <strong>Not every attachment travels the same way.</strong>
+  Images the user marks <em>embed</em> are base64-encoded into chat events and sent as
+  <strong>WebSocket frames the SDK caps at 4&nbsp;MiB</strong>
+  (<code>session_protocol.MAX_FRAME_BYTES</code>). Base64 inflates by ~4/3, so a 3&nbsp;MiB image
+  becomes ~4.1&nbsp;MiB and would be dropped in flight. Workspace file uploads go over
+  <strong>HTTP</strong> and are unaffected by that ceiling.
+</div>
+
+<p>
+  So the answer is not "remove the limit" and not "raise one number". It is <strong>two configurable
+  ceilings for the HTTP path, plus one fixed ceiling for the WebSocket path</strong>.
+</p>
+
+<h2>After</h2>
+
+<table>
+  <thead><tr><th>Ceiling</th><th>Default</th><th>Configurable</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Single attachment</td>
+      <td><code>200 MiB</code></td>
+      <td class="ok">yes</td>
+      <td>HTTP upload &mdash; no server cap to match</td>
+    </tr>
+    <tr>
+      <td>Combined selection</td>
+      <td><code>200 MiB</code></td>
+      <td class="ok">yes</td>
+      <td>HTTP upload &mdash; bounds one message</td>
+    </tr>
+    <tr>
+      <td>Embedded image</td>
+      <td><code>3 MiB</code></td>
+      <td class="no">no &mdash; fixed</td>
+      <td>4&nbsp;MiB WebSocket frame cap &times; base64 inflation</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="grid">
+  <div class="card before">
+    <h4>Before</h4>
+    <ul>
+      <li>One 3&nbsp;MiB number for both limits</li>
+      <li>Error text literally says <code>3MB</code></li>
+      <li>No way to change it</li>
+      <li>Embedded and uploaded files treated alike</li>
+      <li>Rebuild the image to change the value</li>
+    </ul>
+  </div>
+  <div class="card after">
+    <h4>After</h4>
+    <ul>
+      <li>Separate per-file and combined ceilings, both 200&nbsp;MiB</li>
+      <li>Error text derives from the effective byte value</li>
+      <li>Env var, static-server flag, or runtime global</li>
+      <li>Embedded images keep their own 3&nbsp;MiB ceiling</li>
+      <li>Env change + restart &mdash; no rebuild</li>
+    </ul>
+  </div>
+</div>
+
+<h2>Where the limit is resolved</h2>
+
+<p>
+  New module <code>src/utils/attachment-size-limit.ts</code> owns the resolution. The precedence
+  mirrors the one <code>src/utils/base-path.ts</code> already uses, and is
+  <strong>source-major</strong>: build-time beats serve-time, and within each source the
+  per-limit variable beats the shared one.
+</p>
+
+<div class="flow">
+  <div class="step"><span class="dot">1</span><span><strong>Build time</strong> &mdash;
+    <code>VITE_MAX_ATTACHMENT_FILE_MB</code> &rarr; <code>VITE_MAX_ATTACHMENT_SIZE_MB</code><br>
+    <span class="cap">for deployments that build their own bundle</span></span></div>
+  <div class="step"><span class="dot">2</span><span><strong>Serve time</strong> &mdash;
+    <code>window.__AGENT_CANVAS_MAX_ATTACHMENT_FILE_MB__</code> &rarr;
+    <code>window.__AGENT_CANVAS_MAX_ATTACHMENT_SIZE_MB__</code><br>
+    <span class="cap">injected into <code>index.html</code> by <code>scripts/static-server.mjs</code>;
+    the Docker image and the published binary can be retuned without a rebuild</span></span></div>
+  <div class="step"><span class="dot">3</span><span><strong>Default</strong> &mdash;
+    <code>200 MiB</code> per file and <code>200 MiB</code> combined<br>
+    <span class="cap">a missing, non-numeric, or non-positive value falls back here, so a typo in a
+    deployment's config cannot silently remove the limit</span></span></div>
+</div>
+
+<p>
+  The embedded-image ceiling is <strong>not</strong> part of this chain. It is a constant in the same
+  module, because it is bound to a transport property rather than a deployment choice.
+</p>
+
+<h2>The two send paths</h2>
+
+<p>
+  There are two live paths that put attachments into a message, and both needed the split:
+</p>
+
+<table>
+  <thead><tr><th>Path</th><th>Images</th><th>Files</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>src/utils/send-message-with-attachments.ts</code></td>
+      <td>partitioned: small ones embedded, large ones uploaded as files</td>
+      <td>uploaded over HTTP</td>
+    </tr>
+    <tr>
+      <td><code>src/components/features/chat/chat-interface.tsx</code><br><span class="cap">(<code>handleSendMessage</code>)</span></td>
+      <td>embedded &mdash; checked against the 3&nbsp;MiB ceiling</td>
+      <td>uploaded over HTTP</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Compatibility and risk</h2>
+
+<ul>
+  <li><span class="ok">No API change.</span> The agent-server contract is untouched; this is purely
+      frontend configuration plumbing over the existing runtime-injection channel.</li>
+  <li><span class="wn">The default moves.</span> A canvas built from this branch accepts larger
+      attachments than one built from <code>main</code>. That is the point of the change, but it is a
+      behaviour change worth a maintainer's explicit sign-off.</li>
+  <li><span class="ok">Backend-side cap unchanged.</span> The agent-server still applies
+      <code>FILE_UPLOADS_MAX_FILE_SIZE_MB</code> on its side; the frontend ceiling is an
+      independent, user-facing check.</li>
+  <li><span class="wn">The SDK's HTTP timeout is a separate concern.</span> The TypeScript client has a
+      hard-coded 60&nbsp;s upload timeout. A 200&nbsp;MiB upload over a slow link can hit it. That
+      lives in <code>OpenHands/software-agent-sdk</code>, not here.</li>
+</ul>
+
+<h2>Verification</h2>
+
+<table>
+  <thead><tr><th>Check</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td>Targeted tests (validation, send path, static server)</td><td class="ok">107 passed</td></tr>
+    <tr><td><code>npm run typecheck</code></td><td class="ok">clean</td></tr>
+    <tr><td><code>npm run build</code></td><td class="ok">clean</td></tr>
+    <tr><td><code>eslint</code> on changed <code>src/</code> files</td><td class="ok">clean</td></tr>
+    <tr><td>Full suite</td><td class="ok">9692 passed / 5 failed &mdash; all 5 pre-existing on the base commit</td></tr>
+    <tr><td>Bundle inspection</td><td class="ok"><code>??200</code> default and fixed <code>3 MiB</code> embed cap confirmed in the emitted JS</td></tr>
+  </tbody>
+</table>
+
+</main>
+</body>
+</html>
